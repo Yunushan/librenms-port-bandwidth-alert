@@ -1,0 +1,9 @@
+[Unit]
+Description=Run LibreNMS Port Bandwidth Email Alert hourly
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+
+[Install]
+WantedBy=timers.target

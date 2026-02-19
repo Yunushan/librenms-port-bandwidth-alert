@@ -1,0 +1,11 @@
+[Unit]
+Description=LibreNMS Port Bandwidth Email Alert
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/librenms-port-bandwidth-alert
+EnvironmentFile=/etc/librenms-port-bandwidth-alert.env
+ExecStart=/opt/librenms-port-bandwidth-alert/.venv/bin/python -m src.librenms_port_bandwidth_alert
+User=librenms
+Group=librenms
