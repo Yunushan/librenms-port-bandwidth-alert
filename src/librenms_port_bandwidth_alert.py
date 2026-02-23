@@ -75,6 +75,7 @@ class Config:
     smtp_starttls: bool
     librenms_api_url: str | None
     librenms_api_token: str | None
+    port_name_include: list[str]
 
     state_file: str | None
     cooldown_seconds: int
@@ -100,6 +101,9 @@ def load_config() -> Config:
     port_id_str = os.getenv("PORT_ID", "").strip()
     monitor_all_ports = env_bool("MONITOR_ALL_PORTS", False)
     rrd_file = (os.getenv("RRD_FILE", "").strip() or None)
+    librenms_api_url = (os.getenv("LIBRENMS_API_URL", "").strip() or None)
+    librenms_api_token = (os.getenv("LIBRENMS_API_TOKEN", "").strip() or None)
+    port_name_include = [x.strip() for x in os.getenv("PORT_NAME_INCLUDE", "").split(",") if x.strip()]
 
     if not device_hostname:
         raise SystemExit("DEVICE_HOSTNAME is required")
@@ -109,6 +113,8 @@ def load_config() -> Config:
         raise SystemExit("PORT_ID is required and must be an integer (unless RRD_FILE is set)")
     if port_id_str and not port_id_str.isdigit():
         raise SystemExit("PORT_ID must be an integer")
+    if port_name_include and (not librenms_api_url or not librenms_api_token):
+        raise SystemExit("PORT_NAME_INCLUDE requires LIBRENMS_API_URL and LIBRENMS_API_TOKEN")
 
     email_to_raw = os.getenv("EMAIL_TO", "").strip()
     if not email_to_raw:
@@ -136,8 +142,9 @@ def load_config() -> Config:
         smtp_user=(os.getenv("SMTP_USER", "").strip() or None),
         smtp_pass=(os.getenv("SMTP_PASS", "").strip() or None),
         smtp_starttls=env_bool("SMTP_STARTTLS", True),
-        librenms_api_url=(os.getenv("LIBRENMS_API_URL", "").strip() or None),
-        librenms_api_token=(os.getenv("LIBRENMS_API_TOKEN", "").strip() or None),
+        librenms_api_url=librenms_api_url,
+        librenms_api_token=librenms_api_token,
+        port_name_include=port_name_include,
 
         state_file=(os.getenv("STATE_FILE", "").strip() or None),
         cooldown_seconds=env_int("COOLDOWN_SECONDS", 0),
@@ -399,6 +406,23 @@ def above_time_text(cfg: Config, fraction_above: float) -> str:
     return f"{fraction_above * 100.0:.1f}% (~{format_duration(above_seconds)})"
 
 
+def format_port_label(port_id: int | None, port_name: str | None) -> str:
+    if port_name:
+        return port_name
+    if port_id is not None:
+        return str(port_id)
+    return "unknown"
+
+
+def port_name_matches_filter(port_name: str | None, includes: list[str]) -> bool:
+    if not includes:
+        return True
+    if not port_name:
+        return False
+    name = port_name.lower()
+    return any(term.lower() in name for term in includes)
+
+
 def normalize_api_base(url: str) -> str:
     u = url.strip().rstrip("/")
     if u.endswith("/api/v0"):
@@ -499,9 +523,7 @@ def resolve_alert_port_names(cfg: Config, alerts: list[PortEvaluation]) -> None:
 
 
 def build_single_port_email(cfg: Config, result: PortEvaluation) -> tuple[str, str]:
-    port_label = str(result.port_id) if result.port_id is not None else "unknown"
-    if result.port_name:
-        port_label = f"{port_label} ({result.port_name})"
+    port_label = format_port_label(result.port_id, result.port_name)
     detail = result.detail
     stats = result.stats
 
@@ -521,6 +543,11 @@ def build_single_port_email(cfg: Config, result: PortEvaluation) -> tuple[str, s
             f"- Window: last {format_duration(cfg.window_seconds)}",
             f"- Required time above threshold: {required_time_text(cfg)}",
             f"- Traffic mode: {cfg.mode} ({mode_description(cfg.mode)})",
+            (
+                f"- Port name filter: contains any of {', '.join(cfg.port_name_include)}"
+                if cfg.port_name_include
+                else "- Port name filter: disabled"
+            ),
             "",
             "Observed for this port:",
             f"- Above threshold time: {above_time_text(cfg, detail.get('fraction_above', 0.0))}",
@@ -557,6 +584,11 @@ def build_all_ports_email(cfg: Config, alerted: list[PortEvaluation], checked: i
         f"- Window: last {format_duration(cfg.window_seconds)}",
         f"- Required time above threshold: {required_time_text(cfg)}",
         f"- Traffic mode: {cfg.mode} ({mode_description(cfg.mode)})",
+        (
+            f"- Port name filter: contains any of {', '.join(cfg.port_name_include)}"
+            if cfg.port_name_include
+            else "- Port name filter: disabled"
+        ),
         "",
         f"Ports checked: {checked}",
         f"Ports above threshold: {len(alerted)}",
@@ -565,9 +597,7 @@ def build_all_ports_email(cfg: Config, alerted: list[PortEvaluation], checked: i
     ]
 
     for hit in sorted(alerted, key=lambda x: x.stats.get("max_mbps", 0.0), reverse=True):
-        port_label = str(hit.port_id) if hit.port_id is not None else "unknown"
-        if hit.port_name:
-            port_label = f"{port_label} ({hit.port_name})"
+        port_label = format_port_label(hit.port_id, hit.port_name)
         lines.append(
             "- "
             + f"Port {port_label}: "
@@ -690,11 +720,6 @@ def main() -> int:
             raise SystemExit("No readable port RRD files found. First errors:\n" + "\n".join(errors[:20]))
         raise SystemExit("No readable port RRD files found.")
 
-    state = load_state(cfg.state_file) if cfg.state_file else {}
-    if alerts and within_cooldown(cfg, now, state):
-        debug(cfg, "Alert condition met, but within cooldown. Skipping email.")
-        return 0
-
     if not alerts:
         if cfg.monitor_all_ports:
             debug(cfg, f"No alert. Checked {checked} ports. Skipped {len(errors)} files.")
@@ -703,6 +728,18 @@ def main() -> int:
         return 0
 
     resolve_alert_port_names(cfg, alerts)
+    if cfg.port_name_include:
+        before = len(alerts)
+        alerts = [a for a in alerts if port_name_matches_filter(a.port_name, cfg.port_name_include)]
+        debug(cfg, f"Port name filter kept {len(alerts)} of {before} alerting ports.")
+        if not alerts:
+            debug(cfg, "No alert after applying port-name filter.")
+            return 0
+
+    state = load_state(cfg.state_file) if cfg.state_file else {}
+    if alerts and within_cooldown(cfg, now, state):
+        debug(cfg, "Alert condition met, but within cooldown. Skipping email.")
+        return 0
 
     if cfg.monitor_all_ports:
         subject, body = build_all_ports_email(cfg, alerts, checked, errors)

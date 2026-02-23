@@ -80,6 +80,9 @@ Optional but common:
   - If not set, the script uses local `sendmail` (if available)
 - `LIBRENMS_API_URL` / `LIBRENMS_API_TOKEN` — optional, used to resolve port names in email output
   - Example URL: `https://nms.example.com/api/v0`
+- `PORT_NAME_INCLUDE` — optional comma-separated contains filter on resolved port names
+  - Example: `PORT_NAME_INCLUDE=@example1,@example2`
+  - Requires `LIBRENMS_API_URL` and `LIBRENMS_API_TOKEN`
 - `EMAIL_SUBJECT_PREFIX` — if it includes spaces in shell-loaded env files, quote it
   - Example: `EMAIL_SUBJECT_PREFIX="[Port Bandwidth Alert]"`
 - `STATE_FILE` — cooldown state file (default: `/var/lib/librenms-port-bandwidth-alert/state.json`)
