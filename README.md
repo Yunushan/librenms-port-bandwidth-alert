@@ -106,6 +106,12 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now librenms-port-bandwidth-alert.timer
 ```
 
+If you installed an older service file that used `.venv/bin/python`, update it:
+```bash
+sudo sed -i 's|ExecStart=.*|ExecStart=/usr/bin/python3 -m src.librenms_port_bandwidth_alert|' /etc/systemd/system/librenms-port-bandwidth-alert.service
+sudo systemctl daemon-reload
+```
+
 Logs:
 ```bash
 journalctl -u librenms-port-bandwidth-alert.service -f
