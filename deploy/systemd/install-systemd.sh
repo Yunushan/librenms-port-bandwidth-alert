@@ -6,6 +6,19 @@ SYSTEMD_DIR="/etc/systemd/system"
 SERVICE_FILE="${SYSTEMD_DIR}/${SERVICE_NAME}.service"
 TIMER_FILE="${SYSTEMD_DIR}/${SERVICE_NAME}.timer"
 ENV_FILE="/etc/librenms-port-bandwidth-alert.env"
+RUN_TEST=1
+
+for arg in "$@"; do
+  case "${arg}" in
+    --skip-test)
+      RUN_TEST=0
+      ;;
+    *)
+      echo "Usage: $0 [--skip-test]"
+      exit 1
+      ;;
+  esac
+done
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
@@ -44,14 +57,18 @@ sed -i \
 systemctl daemon-reload
 systemctl enable --now "${SERVICE_NAME}.timer"
 
-if [[ -f "${ENV_FILE}" ]]; then
-  if ! systemctl start "${SERVICE_NAME}.service"; then
-    echo "Service test run failed. Showing status:"
-    systemctl status "${SERVICE_NAME}.service" --no-pager -l || true
-    exit 1
+if [[ "${RUN_TEST}" -eq 1 ]]; then
+  if [[ -f "${ENV_FILE}" ]]; then
+    if ! systemctl start "${SERVICE_NAME}.service"; then
+      echo "Warning: service test run failed, but units were installed/updated."
+      echo "This is usually a configuration issue in ${ENV_FILE}."
+      systemctl status "${SERVICE_NAME}.service" --no-pager -l || true
+    fi
+  else
+    echo "Note: ${ENV_FILE} does not exist yet, skipped test start."
   fi
 else
-  echo "Note: ${ENV_FILE} does not exist yet, skipped test start."
+  echo "Skipped service test run (--skip-test)."
 fi
 
 echo "Installed/updated ${SERVICE_NAME}.service and ${SERVICE_NAME}.timer"

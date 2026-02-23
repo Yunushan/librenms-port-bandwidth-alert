@@ -99,6 +99,10 @@ sudo nano /etc/librenms-port-bandwidth-alert.env
 sudo bash deploy/systemd/install-systemd.sh
 ```
 This command is idempotent, so you can run it again after every `git pull`.
+To skip the test run during install, use:
+```bash
+sudo bash deploy/systemd/install-systemd.sh --skip-test
+```
 
 Logs:
 ```bash
