@@ -77,6 +77,8 @@ Optional but common:
   - If not set, the script uses local `sendmail` (if available)
 - `EMAIL_SUBJECT_PREFIX` — if it includes spaces in shell-loaded env files, quote it
   - Example: `EMAIL_SUBJECT_PREFIX="[Port Bandwidth Alert]"`
+- `STATE_FILE` — cooldown state file (default: `/var/lib/librenms-port-bandwidth-alert/state.json`)
+- `COOLDOWN_SECONDS` — minimum seconds between emails (default: `0`)
 
 ### Finding `PORT_ID`
 
@@ -119,6 +121,7 @@ sudo nano /etc/librenms-port-bandwidth-alert.env
 sudo bash deploy/systemd/install-systemd.sh
 ```
 This command is idempotent, so you can run it again after every `git pull`.
+It also ensures `STATE_FILE` points to a writable location for the `librenms` user.
 To skip the test run during install, use:
 ```bash
 sudo bash deploy/systemd/install-systemd.sh --skip-test

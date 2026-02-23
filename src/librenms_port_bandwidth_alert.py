@@ -16,6 +16,7 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from email.message import EmailMessage
@@ -567,7 +568,11 @@ def main() -> int:
         state["last_subject"] = subject
         state["last_alerted_count"] = len(alerts)
         state["last_alerted_ports"] = [a.port_id for a in alerts if a.port_id is not None]
-        save_state(cfg.state_file, state)
+        try:
+            save_state(cfg.state_file, state)
+        except OSError as e:
+            # Do not fail the whole run after sending mail if state persistence is not writable.
+            print(f"Warning: could not save STATE_FILE={cfg.state_file}: {e}", file=sys.stderr)
 
     if cfg.monitor_all_ports:
         print(f"Alert sent for {len(alerts)} port(s).")
