@@ -3,20 +3,20 @@
 LibreNMS Port Bandwidth Email Alert
 
 - Reads port traffic from LibreNMS RRD files
+- Supports monitoring one specific port or all ports on a device
 - Sends an email if sustained Mbps over last hour exceeds threshold
 - Intended to run hourly (cron/systemd timer)
 """
 from __future__ import annotations
 
-import os
-import sys
-import time
+import glob
 import json
 import math
-import glob
+import os
+import re
 import shlex
-import socket
 import subprocess
+import time
 from dataclasses import dataclass
 from email.message import EmailMessage
 import smtplib
@@ -51,7 +51,8 @@ def env_float(name: str, default: float) -> float:
 @dataclass
 class Config:
     device_hostname: str
-    port_id: int
+    port_id: int | None
+    monitor_all_ports: bool
     threshold_mbps: float
     mode: str
     window_seconds: int
@@ -76,6 +77,14 @@ class Config:
     debug: bool
 
 
+@dataclass
+class PortEvaluation:
+    port_id: int | None
+    rrd_file: str
+    detail: dict
+    stats: dict
+
+
 def load_config() -> Config:
     # Load .env if python-dotenv is installed and .env exists.
     if load_dotenv is not None and os.path.exists(".env"):
@@ -83,11 +92,17 @@ def load_config() -> Config:
 
     device_hostname = os.getenv("DEVICE_HOSTNAME", "").strip()
     port_id_str = os.getenv("PORT_ID", "").strip()
+    monitor_all_ports = env_bool("MONITOR_ALL_PORTS", False)
+    rrd_file = (os.getenv("RRD_FILE", "").strip() or None)
 
     if not device_hostname:
         raise SystemExit("DEVICE_HOSTNAME is required")
-    if not port_id_str.isdigit():
-        raise SystemExit("PORT_ID is required and must be an integer")
+    if monitor_all_ports and rrd_file:
+        raise SystemExit("MONITOR_ALL_PORTS=true cannot be used with RRD_FILE")
+    if not monitor_all_ports and not rrd_file and not port_id_str.isdigit():
+        raise SystemExit("PORT_ID is required and must be an integer (unless RRD_FILE is set)")
+    if port_id_str and not port_id_str.isdigit():
+        raise SystemExit("PORT_ID must be an integer")
 
     email_to_raw = os.getenv("EMAIL_TO", "").strip()
     if not email_to_raw:
@@ -96,14 +111,15 @@ def load_config() -> Config:
 
     return Config(
         device_hostname=device_hostname,
-        port_id=int(port_id_str),
+        port_id=(int(port_id_str) if port_id_str else None),
+        monitor_all_ports=monitor_all_ports,
         threshold_mbps=env_float("THRESHOLD_MBPS", 50.0),
         mode=os.getenv("MODE", "max").strip().lower(),
         window_seconds=env_int("WINDOW_SECONDS", 3600),
         min_fraction_above=env_float("MIN_FRACTION_ABOVE", 1.0),
         min_points=env_int("MIN_POINTS", 4),
         rrd_base_dir=os.getenv("RRD_BASE_DIR", "/opt/librenms/rrd").strip(),
-        rrd_file=(os.getenv("RRD_FILE", "").strip() or None),
+        rrd_file=rrd_file,
 
         email_to=email_to,
         email_from=os.getenv("EMAIL_FROM", "librenms-alert@example.com").strip(),
@@ -127,11 +143,22 @@ def debug(cfg: Config, msg: str) -> None:
         print(f"[DEBUG] {msg}")
 
 
+def parse_port_id_from_rrd(rrd_file: str) -> int | None:
+    base = os.path.basename(rrd_file)
+    for pattern in (r"^port-id(\d+)\.rrd$", r"^port-(\d+)\.rrd$", r"^portid(\d+)\.rrd$"):
+        m = re.match(pattern, base)
+        if m:
+            return int(m.group(1))
+    return None
+
+
 def find_rrd_file(cfg: Config) -> str:
     if cfg.rrd_file:
         if not os.path.exists(cfg.rrd_file):
             raise SystemExit(f"RRD_FILE does not exist: {cfg.rrd_file}")
         return cfg.rrd_file
+    if cfg.port_id is None:
+        raise SystemExit("PORT_ID is required unless RRD_FILE is set")
 
     device_dir = os.path.join(cfg.rrd_base_dir, cfg.device_hostname)
     if not os.path.isdir(device_dir):
@@ -166,6 +193,25 @@ def find_rrd_file(cfg: Config) -> str:
         f"Could not find port RRD for port_id={cfg.port_id} under {device_dir}. "
         "Set RRD_FILE explicitly."
     )
+
+
+def find_all_port_rrd_files(cfg: Config) -> list[str]:
+    device_dir = os.path.join(cfg.rrd_base_dir, cfg.device_hostname)
+    if not os.path.isdir(device_dir):
+        raise SystemExit(f"Device RRD directory not found: {device_dir}")
+
+    patterns = [
+        os.path.join(device_dir, "port-id*.rrd"),
+        os.path.join(device_dir, "port-*.rrd"),
+        os.path.join(device_dir, "portid*.rrd"),
+    ]
+    matches: list[str] = []
+    for p in patterns:
+        matches.extend(glob.glob(p))
+    matches = sorted(set(matches))
+    if not matches:
+        raise SystemExit(f"No port RRD files found under {device_dir}")
+    return matches
 
 
 def run_rrdtool_fetch(cfg: Config, rrd_file: str, start_ts: int, end_ts: int) -> tuple[list[str], list[tuple[int, list[float]]]]:
@@ -311,6 +357,102 @@ def within_cooldown(cfg: Config, now: int, state: dict) -> bool:
     return (now - int(last)) < cfg.cooldown_seconds
 
 
+def build_single_port_email(cfg: Config, result: PortEvaluation) -> tuple[str, str]:
+    port_label = str(result.port_id) if result.port_id is not None else "unknown"
+    detail = result.detail
+    stats = result.stats
+
+    subject = (
+        f"{cfg.email_subject_prefix} {cfg.device_hostname} "
+        f"port_id={port_label} >= {cfg.threshold_mbps:.1f} Mbps ({cfg.mode})"
+    )
+    body = "\n".join(
+        [
+            "LibreNMS Port Bandwidth Alert",
+            "",
+            f"Device: {cfg.device_hostname}",
+            f"Port ID: {port_label}",
+            f"RRD: {result.rrd_file}",
+            "",
+            f"Window: last {cfg.window_seconds} seconds",
+            f"Threshold: {cfg.threshold_mbps:.2f} Mbps",
+            f"Mode: {cfg.mode} (max=either direction, sum=in+out)",
+            f"Condition: fraction_above={detail.get('fraction_above', 0):.3f} (required >= {cfg.min_fraction_above:.3f})",
+            "",
+            "Stats (Mbps):",
+            f"  avg: {stats['avg_mbps']:.2f}    max: {stats['max_mbps']:.2f}",
+            f"  avg_in: {stats['avg_in_mbps']:.2f}  max_in: {stats['max_in_mbps']:.2f}",
+            f"  avg_out: {stats['avg_out_mbps']:.2f} max_out: {stats['max_out_mbps']:.2f}",
+            f"  points: {stats['points']}",
+            "",
+            "Action ideas:",
+            "- Verify whether this traffic is expected (backup, replication, large downloads).",
+            "- If unexpected, check top talkers / flows on the upstream device.",
+            "- Consider adding an official LibreNMS alert rule for long-term management.",
+            "",
+            f"Generated at: {time.strftime('%Y-%m-%d %H:%M:%S %z')}",
+        ]
+    )
+    return subject, body
+
+
+def build_all_ports_email(cfg: Config, alerted: list[PortEvaluation], checked: int, errors: list[str]) -> tuple[str, str]:
+    subject = (
+        f"{cfg.email_subject_prefix} {cfg.device_hostname} "
+        f"{len(alerted)} port(s) >= {cfg.threshold_mbps:.1f} Mbps ({cfg.mode})"
+    )
+
+    lines = [
+        "LibreNMS Port Bandwidth Alert",
+        "",
+        f"Device: {cfg.device_hostname}",
+        "Scope: all ports on device",
+        "",
+        f"Window: last {cfg.window_seconds} seconds",
+        f"Threshold: {cfg.threshold_mbps:.2f} Mbps",
+        f"Mode: {cfg.mode} (max=either direction, sum=in+out)",
+        f"Condition: fraction_above >= {cfg.min_fraction_above:.3f}",
+        "",
+        f"Ports checked: {checked}",
+        f"Ports above threshold: {len(alerted)}",
+        "",
+        "Ports above threshold:",
+    ]
+
+    for hit in sorted(alerted, key=lambda x: x.stats.get("max_mbps", 0.0), reverse=True):
+        port_label = str(hit.port_id) if hit.port_id is not None else "unknown"
+        lines.append(
+            "  "
+            + f"port_id={port_label} "
+            + f"avg={hit.stats['avg_mbps']:.2f} "
+            + f"max={hit.stats['max_mbps']:.2f} "
+            + f"fraction_above={hit.detail.get('fraction_above', 0):.3f} "
+            + f"points={hit.stats['points']} "
+            + f"rrd={hit.rrd_file}"
+        )
+
+    if errors:
+        lines.append("")
+        lines.append("Skipped RRD files (read/parse errors):")
+        for err in errors[:20]:
+            lines.append(f"  {err}")
+        if len(errors) > 20:
+            lines.append(f"  ... and {len(errors) - 20} more")
+
+    lines.extend(
+        [
+            "",
+            "Action ideas:",
+            "- Verify whether this traffic is expected (backup, replication, large downloads).",
+            "- If unexpected, check top talkers / flows on the upstream device.",
+            "- Consider adding an official LibreNMS alert rule for long-term management.",
+            "",
+            f"Generated at: {time.strftime('%Y-%m-%d %H:%M:%S %z')}",
+        ]
+    )
+    return subject, "\n".join(lines)
+
+
 def send_email(cfg: Config, subject: str, body: str) -> None:
     msg = EmailMessage()
     msg["From"] = cfg.email_from
@@ -349,58 +491,88 @@ def main() -> int:
     now = int(time.time())
     start_ts = now - cfg.window_seconds
 
-    rrd_file = find_rrd_file(cfg)
-    ds_names, data = run_rrdtool_fetch(cfg, rrd_file, start_ts, now)
-    series, stats = compute_series_mbps(cfg, ds_names, data)
-    ok, detail = should_alert(cfg, series)
+    if cfg.monitor_all_ports:
+        rrd_files = find_all_port_rrd_files(cfg)
+    else:
+        rrd_files = [find_rrd_file(cfg)]
+
+    alerts: list[PortEvaluation] = []
+    errors: list[str] = []
+    checked = 0
+    non_alert_detail: dict = {}
+    non_alert_stats: dict = {}
+
+    for rrd_file in rrd_files:
+        port_id = parse_port_id_from_rrd(rrd_file)
+        try:
+            ds_names, data = run_rrdtool_fetch(cfg, rrd_file, start_ts, now)
+            series, stats = compute_series_mbps(cfg, ds_names, data)
+            ok, detail = should_alert(cfg, series)
+        except SystemExit as e:
+            if cfg.monitor_all_ports:
+                msg = f"{rrd_file}: {str(e)}"
+                errors.append(msg)
+                debug(cfg, f"Skipping unreadable RRD: {msg}")
+                continue
+            raise
+
+        checked += 1
+        if ok:
+            alerts.append(
+                PortEvaluation(
+                    port_id=(port_id if port_id is not None else cfg.port_id),
+                    rrd_file=rrd_file,
+                    detail=detail,
+                    stats=stats,
+                )
+            )
+            continue
+
+        if cfg.monitor_all_ports:
+            debug(
+                cfg,
+                f"No alert for port_id={port_id if port_id is not None else 'unknown'}. "
+                + f"Detail: {detail} Stats: {stats}",
+            )
+        else:
+            non_alert_detail = detail
+            non_alert_stats = stats
+
+    if checked == 0:
+        if cfg.monitor_all_ports and errors:
+            raise SystemExit("No readable port RRD files found. First errors:\n" + "\n".join(errors[:20]))
+        raise SystemExit("No readable port RRD files found.")
 
     state = load_state(cfg.state_file) if cfg.state_file else {}
-    if ok and within_cooldown(cfg, now, state):
+    if alerts and within_cooldown(cfg, now, state):
         debug(cfg, "Alert condition met, but within cooldown. Skipping email.")
         return 0
 
-    if not ok:
-        debug(cfg, f"No alert. Detail: {detail} Stats: {stats}")
+    if not alerts:
+        if cfg.monitor_all_ports:
+            debug(cfg, f"No alert. Checked {checked} ports. Skipped {len(errors)} files.")
+        else:
+            debug(cfg, f"No alert. Detail: {non_alert_detail} Stats: {non_alert_stats}")
         return 0
 
-    # Compose email
-    subject = f"{cfg.email_subject_prefix} {cfg.device_hostname} port_id={cfg.port_id} >= {cfg.threshold_mbps:.1f} Mbps ({cfg.mode})"
-    body = "\n".join(
-        [
-            "LibreNMS Port Bandwidth Alert",
-            "",
-            f"Device: {cfg.device_hostname}",
-            f"Port ID: {cfg.port_id}",
-            f"RRD: {rrd_file}",
-            "",
-            f"Window: last {cfg.window_seconds} seconds",
-            f"Threshold: {cfg.threshold_mbps:.2f} Mbps",
-            f"Mode: {cfg.mode} (max=either direction, sum=in+out)",
-            f"Condition: fraction_above={detail.get('fraction_above', 0):.3f} (required >= {cfg.min_fraction_above:.3f})",
-            "",
-            "Stats (Mbps):",
-            f"  avg: {stats['avg_mbps']:.2f}    max: {stats['max_mbps']:.2f}",
-            f"  avg_in: {stats['avg_in_mbps']:.2f}  max_in: {stats['max_in_mbps']:.2f}",
-            f"  avg_out: {stats['avg_out_mbps']:.2f} max_out: {stats['max_out_mbps']:.2f}",
-            f"  points: {stats['points']}",
-            "",
-            "Action ideas:",
-            "- Verify whether this traffic is expected (backup, replication, large downloads).",
-            "- If unexpected, check top talkers / flows on the upstream device.",
-            "- Consider adding an official LibreNMS alert rule for long-term management.",
-            "",
-            f"Generated at: {time.strftime('%Y-%m-%d %H:%M:%S %z')}",
-        ]
-    )
+    if cfg.monitor_all_ports:
+        subject, body = build_all_ports_email(cfg, alerts, checked, errors)
+    else:
+        subject, body = build_single_port_email(cfg, alerts[0])
 
     send_email(cfg, subject, body)
 
     if cfg.state_file:
         state["last_sent_epoch"] = now
         state["last_subject"] = subject
+        state["last_alerted_count"] = len(alerts)
+        state["last_alerted_ports"] = [a.port_id for a in alerts if a.port_id is not None]
         save_state(cfg.state_file, state)
 
-    print("Alert sent.")
+    if cfg.monitor_all_ports:
+        print(f"Alert sent for {len(alerts)} port(s).")
+    else:
+        print("Alert sent.")
     return 0
 
 

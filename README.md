@@ -1,14 +1,19 @@
 # LibreNMS Port Bandwidth Email Alert
 
-A small, MIT-licensed helper that checks **one specific LibreNMS port** and sends an email if its traffic is **sustained above a threshold** (default: **50 Mbps**) over the **last hour**.
+A small, MIT-licensed helper that checks LibreNMS port traffic and sends an email if usage is **sustained above a threshold** (default: **50 Mbps**) over the **last hour**.
 
-This is handy when you want a simple “watch this uplink” style notification without changing LibreNMS alert rules.
+It supports either:
+- one specific port, or
+- all ports on one device (send summary of matching ports).
+
+This is handy when you want a simple “watch this device/uplink” style notification without changing LibreNMS alert rules.
 
 ## How it works
 
 - Reads the port traffic from LibreNMS **RRD files** (fast + accurate).
 - Computes bits/sec from the RRD samples for the last `WINDOW_SECONDS` (default: 3600).
-- Triggers an alert if the traffic is above `THRESHOLD_MBPS` for at least `MIN_FRACTION_ABOVE` of samples (default: `1.0` = “continuously”).
+- Triggers an alert if traffic is above `THRESHOLD_MBPS` for at least `MIN_FRACTION_ABOVE` of samples (default: `1.0` = “continuously”).
+- In `MONITOR_ALL_PORTS=true` mode, scans all `port*.rrd` files under the device and includes every matching port in one email.
 - Sends an email to `EMAIL_TO`.
 - Intended to be executed **hourly** (cron or systemd timer).
 
@@ -56,23 +61,38 @@ Edit `.env` and set your variables (see below).
 Minimum required:
 
 - `DEVICE_HOSTNAME` — LibreNMS device hostname (RRD folder name), e.g. `router1.example`
-- `PORT_ID` — LibreNMS port_id (integer)
 - `EMAIL_TO` — recipient email (comma-separated allowed)
 
 Optional but common:
 
 - `RRD_BASE_DIR` — defaults to `/opt/librenms/rrd`
+- `MONITOR_ALL_PORTS` — `false` (default). Set `true` to check all ports of this device.
+- `PORT_ID` — required in single-port mode; ignored when `MONITOR_ALL_PORTS=true`
+- `RRD_FILE` — optional exact RRD path for single-port mode
 - `THRESHOLD_MBPS` — defaults to `50`
 - `MODE` — `max` (default), `sum`, `in`, `out`
 - `WINDOW_SECONDS` — defaults to `3600` (1 hour)
 - `MIN_FRACTION_ABOVE` — defaults to `1.0` (1.0 = all samples above threshold)
 - `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_STARTTLS`
   - If not set, the script uses local `sendmail` (if available)
+- `EMAIL_SUBJECT_PREFIX` — if it includes spaces in shell-loaded env files, quote it
+  - Example: `EMAIL_SUBJECT_PREFIX="[Port Bandwidth Alert]"`
 
 ### Finding `PORT_ID`
 
 In the LibreNMS UI, click the port and check the URL, which typically contains a port id (e.g. `/port/12345`).
 If your UI URLs are different, you can also query the LibreNMS DB or use LibreNMS API.
+
+### Monitor all ports on one device
+
+Set these in your env file:
+
+```bash
+DEVICE_HOSTNAME=10.0.34.66
+MONITOR_ALL_PORTS=true
+```
+
+Then run the script/service normally. It sends one summary email containing all ports that stayed above threshold for the window.
 
 ---
 
