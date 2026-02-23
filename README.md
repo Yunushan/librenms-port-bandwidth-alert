@@ -72,9 +72,14 @@ Optional but common:
 - `THRESHOLD_MBPS` — defaults to `50`
 - `MODE` — `max` (default), `sum`, `in`, `out`
 - `WINDOW_SECONDS` — defaults to `3600` (1 hour)
-- `MIN_FRACTION_ABOVE` — defaults to `1.0` (1.0 = all samples above threshold)
+- `MIN_FRACTION_ABOVE` — defaults to `1.0`
+  - `1.0` means the port must be above threshold for the whole window (continuous)
+  - `0.5` means above threshold for at least half of the window
+  - `0.08` is roughly one 5-minute sample in a 1-hour window
 - `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_STARTTLS`
   - If not set, the script uses local `sendmail` (if available)
+- `LIBRENMS_API_URL` / `LIBRENMS_API_TOKEN` — optional, used to resolve port names in email output
+  - Example URL: `https://nms.example.com/api/v0`
 - `EMAIL_SUBJECT_PREFIX` — if it includes spaces in shell-loaded env files, quote it
   - Example: `EMAIL_SUBJECT_PREFIX="[Port Bandwidth Alert]"`
 - `STATE_FILE` — cooldown state file (default: `/var/lib/librenms-port-bandwidth-alert/state.json`)
@@ -122,9 +127,10 @@ sudo bash deploy/systemd/install-systemd.sh
 ```
 This command is idempotent, so you can run it again after every `git pull`.
 It also ensures `STATE_FILE` points to a writable location for the `librenms` user.
-To skip the test run during install, use:
+It does not run the service immediately by default.
+To run one immediate test run during install, use:
 ```bash
-sudo bash deploy/systemd/install-systemd.sh --skip-test
+sudo bash deploy/systemd/install-systemd.sh --run-test
 ```
 
 Logs:

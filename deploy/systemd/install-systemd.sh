@@ -7,15 +7,18 @@ SERVICE_FILE="${SYSTEMD_DIR}/${SERVICE_NAME}.service"
 TIMER_FILE="${SYSTEMD_DIR}/${SERVICE_NAME}.timer"
 ENV_FILE="/etc/librenms-port-bandwidth-alert.env"
 DEFAULT_STATE_FILE="/var/lib/${SERVICE_NAME}/state.json"
-RUN_TEST=1
+RUN_TEST=0
 
 for arg in "$@"; do
   case "${arg}" in
+    --run-test)
+      RUN_TEST=1
+      ;;
     --skip-test)
       RUN_TEST=0
       ;;
     *)
-      echo "Usage: $0 [--skip-test]"
+      echo "Usage: $0 [--run-test|--skip-test]"
       exit 1
       ;;
   esac
@@ -119,7 +122,7 @@ if [[ "${RUN_TEST}" -eq 1 ]]; then
     echo "Note: ${ENV_FILE} does not exist yet, skipped test start."
   fi
 else
-  echo "Skipped service test run (--skip-test)."
+  echo "Skipped service test run (default). Use --run-test to execute one immediate run."
 fi
 
 echo "Installed/updated ${SERVICE_NAME}.service and ${SERVICE_NAME}.timer"
