@@ -88,29 +88,17 @@ python -m src.librenms_port_bandwidth_alert
 
 ## Run hourly (systemd timer)
 
-1) Copy the example units:
-```bash
-sudo cp deploy/systemd/librenms-port-bandwidth-alert.service /etc/systemd/system/
-sudo cp deploy/systemd/librenms-port-bandwidth-alert.timer /etc/systemd/system/
-```
-
-2) Create an env file:
+1) Create an env file:
 ```bash
 sudo cp config.example.env /etc/librenms-port-bandwidth-alert.env
 sudo nano /etc/librenms-port-bandwidth-alert.env
 ```
 
-3) Enable:
+2) Install/update systemd units automatically:
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now librenms-port-bandwidth-alert.timer
+sudo bash deploy/systemd/install-systemd.sh
 ```
-
-If you installed an older service file that used `.venv/bin/python`, update it:
-```bash
-sudo sed -i 's|ExecStart=.*|ExecStart=/usr/bin/python3 -m src.librenms_port_bandwidth_alert|' /etc/systemd/system/librenms-port-bandwidth-alert.service
-sudo systemctl daemon-reload
-```
+This command is idempotent, so you can run it again after every `git pull`.
 
 Logs:
 ```bash
