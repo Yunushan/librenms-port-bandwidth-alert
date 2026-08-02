@@ -1,6 +1,6 @@
 # LibreNMS Port Bandwidth Email Alert
 
-A small, MIT-licensed helper that checks LibreNMS port traffic and sends an email if usage is **sustained above a threshold** (default: **50 Mbps**) over the **last hour**.
+A small, 0BSD-licensed helper that checks LibreNMS port traffic and sends an email if usage is **sustained above a threshold** (default: **50 Mbps**) over the **last hour**.
 
 It supports either:
 - one specific port, or
@@ -152,4 +152,4 @@ journalctl -u librenms-port-bandwidth-alert.service -f
 
 ## License
 
-MIT. See `LICENSE`.
+0BSD. See `LICENSE`.
